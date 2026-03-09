@@ -14,7 +14,7 @@
 // @connect      credit.linux.do
 // @connect      linux.do
 // @downloadURL  https://raw.githubusercontent.com/gujimy/linuxdo/main/linuxdo.user.js
-// @updateURL    https://raw.githubusercontent.com/gujimy/linuxdo/main/linuxdo.meta.js
+// @updateURL    https://raw.githubusercontent.com/gujimy/linuxdo/main/linuxdo.user.js
 // @run-at       document-idle
 // @license      MIT
 // ==/UserScript==
