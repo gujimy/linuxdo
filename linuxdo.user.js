@@ -428,7 +428,22 @@
 
   function renderCreditCard(credit) {
     if (!credit?.info) {
-      return '<div class="ldm-empty">暂无积分数据</div>';
+      const expanded = !!uiState.sections.credit;
+      const arrow = expanded ? '▾' : '▸';
+      return `
+        <div class="ldm-block">
+          <div class="ldm-block-head">
+            <div class="ldm-block-title">LDC</div>
+            <div class="ldm-head-actions">
+              <a href="https://credit.linux.do/home" target="_blank" rel="noopener noreferrer" class="ldm-pill ldm-pill-link">Credit</a>
+              <button id="ldm-toggle-credit" class="ldm-toggle-btn">${arrow}</button>
+            </div>
+          </div>
+          <div class="${expanded ? 'ldm-show' : 'ldm-hide'}">
+            <div class="ldm-empty">暂无积分数据，请点击 Credit 登录后重试</div>
+          </div>
+        </div>
+      `;
     }
 
     const gainClass = credit.estimatedGain === null
@@ -750,6 +765,14 @@
   }
 
   async function refreshAll(manual = false) {
+    const formatCreditError = (err) => {
+      const msg = String(err?.message || '');
+      if (err?.status === 401 || /HTTP\s*401/.test(msg)) {
+        return '用户未登录 Credit，请打开 Credit 页面并登录';
+      }
+      return msg || '失败';
+    };
+
     if (state.loading) return;
     state.loading = true;
     state.error = '';
@@ -764,7 +787,7 @@
       if (trustRes.status === 'fulfilled') state.trust = trustRes.value;
       else errs.push(`等级: ${trustRes.reason?.message || '失败'}`);
       if (creditRes.status === 'fulfilled') state.credit = creditRes.value;
-      else errs.push(`LDC: ${creditRes.reason?.message || '失败'}`);
+      else errs.push(`LDC: ${formatCreditError(creditRes.reason)}`);
 
       if (errs.length) {
         state.error = manual ? `部分刷新失败：${errs.join('；')}` : `部分数据更新失败：${errs.join('；')}`;
