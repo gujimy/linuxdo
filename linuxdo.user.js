@@ -28,9 +28,11 @@
   const THROTTLE = {
     BASE_INTERVAL_MS: 5 * 60 * 1000,
     MIN_INTERVAL_MS: 60 * 1000,
+    MANUAL_MIN_INTERVAL_MS: 3 * 1000,
     MAX_BACKOFF_MS: 40 * 60 * 1000,
     CREDIT_401_PAUSE_MS: 20 * 60 * 1000,
     CROSS_TAB_LOCK_MS: 20 * 1000,
+    SAME_ORIGIN_TIMEOUT_MS: 15000,
   };
 
   function isLinuxdoPage() {
@@ -107,13 +109,24 @@
   }
 
   function readThrottleState() {
-    return gGet(KEYS.THROTTLE_STATE, {
-      nextAllowedAt: 0,
-      failCount: 0,
-      creditPausedUntil: 0,
-      lockUntil: 0,
-      lockBy: '',
-    });
+    const raw = gGet(KEYS.THROTTLE_STATE, null);
+    const legacyNextAllowedAt = Number(raw?.nextAllowedAt || 0);
+    const legacyFailCount = Number(raw?.failCount || 0);
+    const legacyCreditPausedUntil = Number(raw?.creditPausedUntil || 0);
+    return {
+      lockUntil: Number(raw?.lockUntil || 0),
+      lockBy: String(raw?.lockBy || ''),
+      lockToken: String(raw?.lockToken || ''),
+      trust: {
+        nextAllowedAt: Number(raw?.trust?.nextAllowedAt ?? legacyNextAllowedAt ?? 0),
+        failCount: Number(raw?.trust?.failCount ?? legacyFailCount ?? 0),
+      },
+      credit: {
+        nextAllowedAt: Number(raw?.credit?.nextAllowedAt ?? legacyNextAllowedAt ?? 0),
+        failCount: Number(raw?.credit?.failCount ?? legacyFailCount ?? 0),
+        pausedUntil: Number(raw?.credit?.pausedUntil ?? legacyCreditPausedUntil ?? 0),
+      },
+    };
   }
 
   function writeThrottleState(nextState) {
@@ -125,7 +138,15 @@
     const curr = readThrottleState();
     return writeThrottleState({
       ...curr,
-      ...patch,
+      ...(patch || {}),
+      trust: {
+        ...curr.trust,
+        ...(patch?.trust || {}),
+      },
+      credit: {
+        ...curr.credit,
+        ...(patch?.credit || {}),
+      },
     });
   }
 
@@ -139,24 +160,65 @@
     const now = Date.now();
     const curr = readThrottleState();
     if (curr.lockUntil > now && curr.lockBy && curr.lockBy !== TAB_ID) {
-      return false;
+      return null;
     }
+    const lockToken = `${TAB_ID}_${now}_${Math.random().toString(36).slice(2, 8)}`;
     writeThrottleState({
       ...curr,
       lockUntil: now + THROTTLE.CROSS_TAB_LOCK_MS,
       lockBy: TAB_ID,
+      lockToken,
     });
     const latest = readThrottleState();
-    return latest.lockBy === TAB_ID && latest.lockUntil > now;
+    return latest.lockBy === TAB_ID && latest.lockToken === lockToken && latest.lockUntil > now
+      ? lockToken
+      : null;
   }
 
-  function releaseCrossTabLock() {
+  function releaseCrossTabLock(lockToken) {
     const curr = readThrottleState();
-    if (curr.lockBy !== TAB_ID) return;
+    if (curr.lockBy !== TAB_ID || curr.lockToken !== lockToken) return;
     writeThrottleState({
       ...curr,
       lockUntil: 0,
       lockBy: '',
+      lockToken: '',
+    });
+  }
+
+  function formatClockTime(ts) {
+    const d = new Date(ts);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
+
+  function updateSourceSuccess(source) {
+    const now = Date.now();
+    if (source === 'trust') {
+      mergeThrottleState({
+        trust: { failCount: 0, nextAllowedAt: now + THROTTLE.BASE_INTERVAL_MS },
+      });
+      return;
+    }
+    mergeThrottleState({
+      credit: { failCount: 0, nextAllowedAt: now + THROTTLE.BASE_INTERVAL_MS, pausedUntil: 0 },
+    });
+  }
+
+  function updateSourceFailure(source) {
+    const curr = readThrottleState();
+    const sourceState = curr[source];
+    const nextFailCount = Number(sourceState?.failCount || 0) + 1;
+    const nextAllowedAt = Date.now() + computeBackoffMs(nextFailCount);
+    if (source === 'trust') {
+      mergeThrottleState({
+        trust: { failCount: nextFailCount, nextAllowedAt },
+      });
+      return;
+    }
+    mergeThrottleState({
+      credit: { failCount: nextFailCount, nextAllowedAt },
     });
   }
 
@@ -221,7 +283,10 @@
     };
 
     if (sameOrigin) {
-      const r = await fetch(url, { credentials: 'include', headers });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), opts.timeout || THROTTLE.SAME_ORIGIN_TIMEOUT_MS);
+      const r = await fetch(url, { credentials: 'include', headers, signal: controller.signal })
+        .finally(() => clearTimeout(timeoutId));
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return await r.json();
     }
@@ -847,12 +912,16 @@
     if (state.loading) return;
     const now = Date.now();
     const throttleState = readThrottleState();
-    let lockAcquired = false;
-    if (!manual) {
-      if (throttleState.nextAllowedAt > now) return;
-      if (state.lastRequestAt > 0 && now - state.lastRequestAt < THROTTLE.MIN_INTERVAL_MS) return;
-      lockAcquired = tryAcquireCrossTabLock();
-      if (!lockAcquired) return;
+    const minInterval = manual ? THROTTLE.MANUAL_MIN_INTERVAL_MS : THROTTLE.MIN_INTERVAL_MS;
+    if (state.lastRequestAt > 0 && now - state.lastRequestAt < minInterval) return;
+    const lockToken = tryAcquireCrossTabLock();
+    if (!lockToken) return;
+    const shouldFetchTrust = manual || throttleState.trust.nextAllowedAt <= now;
+    const isCreditPaused = !manual && throttleState.credit.pausedUntil > now;
+    const shouldFetchCredit = manual || (!isCreditPaused && throttleState.credit.nextAllowedAt <= now);
+    if (!shouldFetchTrust && !shouldFetchCredit) {
+      releaseCrossTabLock(lockToken);
+      return;
     }
 
     state.lastRequestAt = now;
@@ -861,59 +930,60 @@
     render();
 
     try {
-      const latestThrottleState = readThrottleState();
-      const skipCreditForPause = !manual && latestThrottleState.creditPausedUntil > Date.now();
-      const creditPromise = skipCreditForPause
-        ? Promise.resolve(state.credit)
-        : fetchCreditData();
+      const trustPromise = shouldFetchTrust
+        ? fetchTrustData()
+        : Promise.resolve(state.trust);
+      const creditPromise = shouldFetchCredit
+        ? fetchCreditData()
+        : Promise.resolve(state.credit);
 
       const [trustRes, creditRes] = await Promise.allSettled([
-        fetchTrustData(),
+        trustPromise,
         creditPromise,
       ]);
       const errs = [];
-      if (trustRes.status === 'fulfilled') state.trust = trustRes.value;
-      else errs.push(`等级: ${trustRes.reason?.message || '失败'}`);
-      if (creditRes.status === 'fulfilled') state.credit = creditRes.value;
-      else {
-        const creditErr = creditRes.reason;
-        errs.push(`LDC: ${formatCreditError(creditErr)}`);
-        const msg = String(creditErr?.message || '');
-        if (creditErr?.status === 401 || /HTTP\s*401/.test(msg)) {
-          mergeThrottleState({ creditPausedUntil: Date.now() + THROTTLE.CREDIT_401_PAUSE_MS });
+      if (shouldFetchTrust) {
+        if (trustRes.status === 'fulfilled') {
+          state.trust = trustRes.value;
+          updateSourceSuccess('trust');
+        } else {
+          errs.push(`等级: ${trustRes.reason?.message || '失败'}`);
+          updateSourceFailure('trust');
+        }
+      }
+
+      if (shouldFetchCredit) {
+        if (creditRes.status === 'fulfilled') {
+          state.credit = creditRes.value;
+          updateSourceSuccess('credit');
+        } else {
+          const creditErr = creditRes.reason;
+          errs.push(`LDC: ${formatCreditError(creditErr)}`);
+          updateSourceFailure('credit');
+          const msg = String(creditErr?.message || '');
+          if (creditErr?.status === 401 || /HTTP\s*401/.test(msg)) {
+            mergeThrottleState({
+              credit: { pausedUntil: Date.now() + THROTTLE.CREDIT_401_PAUSE_MS },
+            });
+          }
         }
       }
 
       if (errs.length) {
         state.error = manual ? `部分刷新失败：${errs.join('；')}` : `部分数据更新失败：${errs.join('；')}`;
-        const latest = readThrottleState();
-        const nextFailCount = Number(latest.failCount || 0) + 1;
-        mergeThrottleState({
-          failCount: nextFailCount,
-          nextAllowedAt: Date.now() + computeBackoffMs(nextFailCount),
-        });
-      } else if (!manual) {
-        mergeThrottleState({
-          failCount: 0,
-          nextAllowedAt: Date.now() + THROTTLE.BASE_INTERVAL_MS,
-        });
+      } else if (isCreditPaused) {
+        state.error = `LDC 自动请求已暂停至 ${formatClockTime(throttleState.credit.pausedUntil)}，可点击刷新重试`;
       }
       gSet(KEYS.LAST_DATA, { trust: state.trust, credit: state.credit, ts: Date.now() });
     } catch (err) {
       state.error = manual
         ? `刷新失败：${err?.message || '未知错误'}`
         : (err?.message || '数据获取失败');
-      if (!manual) {
-        const latest = readThrottleState();
-        const nextFailCount = Number(latest.failCount || 0) + 1;
-        mergeThrottleState({
-          failCount: nextFailCount,
-          nextAllowedAt: Date.now() + computeBackoffMs(nextFailCount),
-        });
-      }
+      if (shouldFetchTrust) updateSourceFailure('trust');
+      if (shouldFetchCredit) updateSourceFailure('credit');
     } finally {
       state.loading = false;
-      if (lockAcquired) releaseCrossTabLock();
+      releaseCrossTabLock(lockToken);
       render();
     }
   }
