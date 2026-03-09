@@ -5,7 +5,6 @@
 // @description  等级 + LDC
 // @author       code01
 // @match        https://linux.do/*
-// @match        https://credit.linux.do/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -21,6 +20,13 @@
 
 (function () {
   'use strict';
+  let refreshTimer = null;
+  let routeWatcherStarted = false;
+  let lastHref = location.href;
+
+  function isLinuxdoHome() {
+    return location.hostname === 'linux.do' && (location.pathname === '/' || location.pathname === '');
+  }
 
   const API = {
     TRUST_CONNECT: 'https://connect.linux.do/',
@@ -803,11 +809,60 @@
     }
   }
 
-  function init() {
+  function activateHome() {
     ensureUI();
     render();
-    refreshAll(false);
-    setInterval(() => refreshAll(false), 5 * 60 * 1000);
+    if (!refreshTimer) {
+      refreshAll(false);
+      refreshTimer = setInterval(() => {
+        if (isLinuxdoHome()) refreshAll(false);
+      }, 5 * 60 * 1000);
+    }
+  }
+
+  function deactivateHome() {
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+    const root = document.getElementById('ldm-tw-root');
+    if (root) root.remove();
+  }
+
+  function onRouteMaybeChanged() {
+    const href = location.href;
+    if (href === lastHref) return;
+    lastHref = href;
+    if (isLinuxdoHome()) activateHome();
+    else deactivateHome();
+  }
+
+  function startRouteWatcher() {
+    if (routeWatcherStarted) return;
+    routeWatcherStarted = true;
+
+    const rawPushState = history.pushState;
+    history.pushState = function (...args) {
+      const ret = rawPushState.apply(this, args);
+      onRouteMaybeChanged();
+      return ret;
+    };
+
+    const rawReplaceState = history.replaceState;
+    history.replaceState = function (...args) {
+      const ret = rawReplaceState.apply(this, args);
+      onRouteMaybeChanged();
+      return ret;
+    };
+
+    window.addEventListener('popstate', onRouteMaybeChanged);
+    window.addEventListener('hashchange', onRouteMaybeChanged);
+  }
+
+  function init() {
+    startRouteWatcher();
+    if (isLinuxdoHome()) activateHome();
+    else deactivateHome();
   }
 
   if (document.readyState === 'loading') {
