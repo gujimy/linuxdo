@@ -23,9 +23,18 @@
   let refreshTimer = null;
   let routeWatcherStarted = false;
   let lastHref = location.href;
+  const TAB_ID = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  function isLinuxdoHome() {
-    return location.hostname === 'linux.do' && (location.pathname === '/' || location.pathname === '');
+  const THROTTLE = {
+    BASE_INTERVAL_MS: 5 * 60 * 1000,
+    MIN_INTERVAL_MS: 60 * 1000,
+    MAX_BACKOFF_MS: 40 * 60 * 1000,
+    CREDIT_401_PAUSE_MS: 20 * 60 * 1000,
+    CROSS_TAB_LOCK_MS: 20 * 1000,
+  };
+
+  function isLinuxdoPage() {
+    return location.hostname === 'linux.do';
   }
 
   const API = {
@@ -42,6 +51,7 @@
     FAB_POS: 'ldm_tw_fab_pos',
     SECTION_STATE: 'ldm_tw_section_state',
     PANEL_SIZE: 'ldm_tw_panel_size',
+    THROTTLE_STATE: 'ldm_tw_throttle_state',
   };
 
   const LOW_LEVEL_REQUIREMENTS = {
@@ -66,6 +76,7 @@
     trust: null,
     credit: null,
     error: '',
+    lastRequestAt: 0,
   };
 
   const uiState = {
@@ -93,6 +104,60 @@
   function ensureTailwindLoaded() {
     // 保留接口以减少改动；当前改为纯 CSS，不再注入 Tailwind
     return Promise.resolve();
+  }
+
+  function readThrottleState() {
+    return gGet(KEYS.THROTTLE_STATE, {
+      nextAllowedAt: 0,
+      failCount: 0,
+      creditPausedUntil: 0,
+      lockUntil: 0,
+      lockBy: '',
+    });
+  }
+
+  function writeThrottleState(nextState) {
+    gSet(KEYS.THROTTLE_STATE, nextState);
+    return nextState;
+  }
+
+  function mergeThrottleState(patch) {
+    const curr = readThrottleState();
+    return writeThrottleState({
+      ...curr,
+      ...patch,
+    });
+  }
+
+  function computeBackoffMs(failCount) {
+    if (failCount <= 0) return THROTTLE.BASE_INTERVAL_MS;
+    const exp = Math.max(0, failCount - 1);
+    return Math.min(THROTTLE.BASE_INTERVAL_MS * (2 ** exp), THROTTLE.MAX_BACKOFF_MS);
+  }
+
+  function tryAcquireCrossTabLock() {
+    const now = Date.now();
+    const curr = readThrottleState();
+    if (curr.lockUntil > now && curr.lockBy && curr.lockBy !== TAB_ID) {
+      return false;
+    }
+    writeThrottleState({
+      ...curr,
+      lockUntil: now + THROTTLE.CROSS_TAB_LOCK_MS,
+      lockBy: TAB_ID,
+    });
+    const latest = readThrottleState();
+    return latest.lockBy === TAB_ID && latest.lockUntil > now;
+  }
+
+  function releaseCrossTabLock() {
+    const curr = readThrottleState();
+    if (curr.lockBy !== TAB_ID) return;
+    writeThrottleState({
+      ...curr,
+      lockUntil: 0,
+      lockBy: '',
+    });
   }
 
   function escapeHtml(str) {
@@ -780,31 +845,75 @@
     };
 
     if (state.loading) return;
+    const now = Date.now();
+    const throttleState = readThrottleState();
+    let lockAcquired = false;
+    if (!manual) {
+      if (throttleState.nextAllowedAt > now) return;
+      if (state.lastRequestAt > 0 && now - state.lastRequestAt < THROTTLE.MIN_INTERVAL_MS) return;
+      lockAcquired = tryAcquireCrossTabLock();
+      if (!lockAcquired) return;
+    }
+
+    state.lastRequestAt = now;
     state.loading = true;
     state.error = '';
     render();
 
     try {
+      const latestThrottleState = readThrottleState();
+      const skipCreditForPause = !manual && latestThrottleState.creditPausedUntil > Date.now();
+      const creditPromise = skipCreditForPause
+        ? Promise.resolve(state.credit)
+        : fetchCreditData();
+
       const [trustRes, creditRes] = await Promise.allSettled([
         fetchTrustData(),
-        fetchCreditData(),
+        creditPromise,
       ]);
       const errs = [];
       if (trustRes.status === 'fulfilled') state.trust = trustRes.value;
       else errs.push(`等级: ${trustRes.reason?.message || '失败'}`);
       if (creditRes.status === 'fulfilled') state.credit = creditRes.value;
-      else errs.push(`LDC: ${formatCreditError(creditRes.reason)}`);
+      else {
+        const creditErr = creditRes.reason;
+        errs.push(`LDC: ${formatCreditError(creditErr)}`);
+        const msg = String(creditErr?.message || '');
+        if (creditErr?.status === 401 || /HTTP\s*401/.test(msg)) {
+          mergeThrottleState({ creditPausedUntil: Date.now() + THROTTLE.CREDIT_401_PAUSE_MS });
+        }
+      }
 
       if (errs.length) {
         state.error = manual ? `部分刷新失败：${errs.join('；')}` : `部分数据更新失败：${errs.join('；')}`;
+        const latest = readThrottleState();
+        const nextFailCount = Number(latest.failCount || 0) + 1;
+        mergeThrottleState({
+          failCount: nextFailCount,
+          nextAllowedAt: Date.now() + computeBackoffMs(nextFailCount),
+        });
+      } else if (!manual) {
+        mergeThrottleState({
+          failCount: 0,
+          nextAllowedAt: Date.now() + THROTTLE.BASE_INTERVAL_MS,
+        });
       }
       gSet(KEYS.LAST_DATA, { trust: state.trust, credit: state.credit, ts: Date.now() });
     } catch (err) {
       state.error = manual
         ? `刷新失败：${err?.message || '未知错误'}`
         : (err?.message || '数据获取失败');
+      if (!manual) {
+        const latest = readThrottleState();
+        const nextFailCount = Number(latest.failCount || 0) + 1;
+        mergeThrottleState({
+          failCount: nextFailCount,
+          nextAllowedAt: Date.now() + computeBackoffMs(nextFailCount),
+        });
+      }
     } finally {
       state.loading = false;
+      if (lockAcquired) releaseCrossTabLock();
       render();
     }
   }
@@ -815,8 +924,8 @@
     if (!refreshTimer) {
       refreshAll(false);
       refreshTimer = setInterval(() => {
-        if (isLinuxdoHome()) refreshAll(false);
-      }, 5 * 60 * 1000);
+        if (isLinuxdoPage()) refreshAll(false);
+      }, THROTTLE.BASE_INTERVAL_MS);
     }
   }
 
@@ -833,7 +942,7 @@
     const href = location.href;
     if (href === lastHref) return;
     lastHref = href;
-    if (isLinuxdoHome()) activateHome();
+    if (isLinuxdoPage()) activateHome();
     else deactivateHome();
   }
 
@@ -861,7 +970,7 @@
 
   function init() {
     startRouteWatcher();
-    if (isLinuxdoHome()) activateHome();
+    if (isLinuxdoPage()) activateHome();
     else deactivateHome();
   }
 
