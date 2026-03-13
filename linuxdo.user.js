@@ -543,14 +543,15 @@
     const arrow = expanded ? '▾' : '▸';
 
     return `
-      <div class="ldm-block">
-        <div class="ldm-block-head">
-          <div class="ldm-block-title">等级</div>
-          <div class="ldm-head-actions">
-            ${connectLink}
-            <button id="ldm-toggle-trust" class="ldm-toggle-btn">${arrow}</button>
+        <div class="ldm-block">
+          <div class="ldm-block-head">
+            <div class="ldm-block-title">等级</div>
+            <div class="ldm-head-actions">
+              <button id="ldm-refresh-trust" class="ldm-refresh-mini" title="刷新 等级">↻</button>
+              ${connectLink}
+              <button id="ldm-toggle-trust" class="ldm-toggle-btn">${arrow}</button>
+            </div>
           </div>
-        </div>
         <div class="${expanded ? 'ldm-show' : 'ldm-hide'}">
           <div class="ldm-level-row">
             <div class="ldm-level">Lv.${escapeHtml(trust.level ?? '--')}</div>
@@ -571,6 +572,7 @@
           <div class="ldm-block-head">
             <div class="ldm-block-title">LDC</div>
             <div class="ldm-head-actions">
+              <button id="ldm-refresh-credit" class="ldm-refresh-mini" title="刷新 LDC">↻</button>
               <a href="https://credit.linux.do/home" target="_blank" rel="noopener noreferrer" class="ldm-pill ldm-pill-link">Credit</a>
               <button id="ldm-toggle-credit" class="ldm-toggle-btn">${arrow}</button>
             </div>
@@ -610,6 +612,7 @@
         <div class="ldm-block-head">
           <div class="ldm-block-title">LDC</div>
           <div class="ldm-head-actions">
+            <button id="ldm-refresh-credit" class="ldm-refresh-mini" title="刷新 LDC">↻</button>
             <a href="https://credit.linux.do/home" target="_blank" rel="noopener noreferrer" class="ldm-pill ldm-pill-link">Credit</a>
             <button id="ldm-toggle-credit" class="ldm-toggle-btn">${arrow}</button>
           </div>
@@ -665,10 +668,8 @@
       #ldm-tw-root .ldm-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
       #ldm-tw-root .ldm-scroll::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.45); border-radius: 9999px; }
       #ldm-tw-root .ldm-spin { animation: ldm-spin 0.8s linear infinite; }
-      #ldm-tw-root .ldm-panel-head { padding: 12px 14px; background: linear-gradient(90deg, #0f172a, #334155); color: #fff; display:flex; align-items:center; justify-content:space-between; }
-      #ldm-tw-root .ldm-head-title { font-size: 14px; font-weight: 700; line-height: 1.2; }
-      #ldm-tw-root .ldm-head-sub { font-size: 11px; color: #cbd5e1; }
-      #ldm-tw-root .ldm-refresh-btn { width: 32px; height: 32px; border: 0; border-radius: 10px; background: rgba(255,255,255,.2); color: #fff; cursor: pointer; }
+      #ldm-tw-root .ldm-refresh-mini { width: 26px; height: 26px; border: 1px solid #86efac; border-radius: 999px; background: #f0fdf4; color: #047857; cursor: pointer; font-weight: 900; display:inline-flex; align-items:center; justify-content:center; font-size:12px; line-height:1; box-shadow: inset 0 1px 0 rgba(255,255,255,.8); }
+      #ldm-tw-root .ldm-refresh-mini:disabled { opacity: 0.6; cursor: not-allowed; }
       #ldm-tw-root .ldm-panel-body { padding: 12px; overflow-y: auto; flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
       #ldm-tw-root .ldm-card { border: 1px solid #e2e8f0; border-radius: 16px; background: #fff; padding: 12px; }
       #ldm-tw-root .ldm-block { display:flex; flex-direction:column; gap: 10px; }
@@ -713,20 +714,12 @@
     root.id = 'ldm-tw-root';
     root.innerHTML = `
       <div id="ldm-fab-wrap" style="position:fixed;z-index:99999;">
-        <button id="ldm-fab" style="width:48px;height:48px;border-radius:999px;box-shadow:0 12px 24px rgba(2,6,23,.2);background:#fff;color:#059669;font-size:12px;font-weight:800;border:1px solid #bbf7d0;cursor:pointer;">
+        <button id="ldm-fab" style="width:52px;height:52px;border-radius:999px;box-shadow:0 10px 20px rgba(2,6,23,.18);background:#fff;color:#059669;font-size:13px;font-weight:900;border:1px solid #bbf7d0;cursor:pointer;letter-spacing:.3px;">
           +0
         </button>
       </div>
 
       <div id="ldm-panel" style="position:fixed;z-index:99998;width:270px;height:88vh;max-width:70vw;border-radius:16px;border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.9);backdrop-filter:blur(10px);box-shadow:0 22px 45px rgba(15,23,42,.25);overflow:hidden;display:none;flex-direction:column;">
-        <div class="ldm-panel-head">
-          <div>
-            <div class="ldm-head-title">Linux.do</div>
-            <div class="ldm-head-sub">等级 + LDC</div>
-          </div>
-          <button id="ldm-refresh" class="ldm-refresh-btn">↻</button>
-        </div>
-
         <div class="ldm-panel-body ldm-scroll">
           <section class="ldm-card" id="ldm-trust-card"></section>
           <section class="ldm-card" id="ldm-credit-card"></section>
@@ -740,7 +733,6 @@
     const panel = root.querySelector('#ldm-panel');
     const fabWrap = root.querySelector('#ldm-fab-wrap');
     const fab = root.querySelector('#ldm-fab');
-    const refresh = root.querySelector('#ldm-refresh');
 
     const defaultHeight = Math.round((window.innerHeight || 900) * 0.88);
     const savedSize = gGet(KEYS.PANEL_SIZE, { width: 270, height: defaultHeight });
@@ -817,7 +809,6 @@
       gSet(KEYS.PANEL_OPEN, panel.style.display !== 'none');
     });
 
-    refresh.addEventListener('click', () => refreshAll(true));
     if (typeof ResizeObserver !== 'undefined') {
       const ro = new ResizeObserver(() => {
         const rect = panel.getBoundingClientRect();
@@ -852,9 +843,8 @@
     const trustEl = document.getElementById('ldm-trust-card');
     const creditEl = document.getElementById('ldm-credit-card');
     const msgEl = document.getElementById('ldm-msg');
-    const refreshBtn = document.getElementById('ldm-refresh');
     const fab = document.getElementById('ldm-fab');
-    if (!trustEl || !creditEl || !msgEl || !refreshBtn) return;
+    if (!trustEl || !creditEl || !msgEl) return;
 
     trustEl.innerHTML = renderTrustCard(state.trust);
     creditEl.innerHTML = renderCreditCard(state.credit);
@@ -875,10 +865,20 @@
       };
     }
 
-    if (state.loading) {
-      refreshBtn.classList.add('ldm-spin');
-    } else {
-      refreshBtn.classList.remove('ldm-spin');
+    const refreshTrustBtn = document.getElementById('ldm-refresh-trust');
+    if (refreshTrustBtn) {
+      refreshTrustBtn.onclick = () => refreshTrust(true);
+      refreshTrustBtn.disabled = state.loading;
+      if (state.loading) refreshTrustBtn.classList.add('ldm-spin');
+      else refreshTrustBtn.classList.remove('ldm-spin');
+    }
+
+    const refreshCreditBtn = document.getElementById('ldm-refresh-credit');
+    if (refreshCreditBtn) {
+      refreshCreditBtn.onclick = () => refreshCredit(true);
+      refreshCreditBtn.disabled = state.loading;
+      if (state.loading) refreshCreditBtn.classList.add('ldm-spin');
+      else refreshCreditBtn.classList.remove('ldm-spin');
     }
 
     if (state.error) {
@@ -900,7 +900,7 @@
     }
   }
 
-  async function refreshAll(manual = false) {
+  async function refreshAll(manual = false, opts = {}) {
     const formatCreditError = (err) => {
       const msg = String(err?.message || '');
       if (err?.status === 401 || /HTTP\s*401/.test(msg)) {
@@ -916,9 +916,11 @@
     if (state.lastRequestAt > 0 && now - state.lastRequestAt < minInterval) return;
     const lockToken = tryAcquireCrossTabLock();
     if (!lockToken) return;
-    const shouldFetchTrust = manual || throttleState.trust.nextAllowedAt <= now;
+    const onlyCredit = !!opts.onlyCredit;
+    const onlyTrust = !!opts.onlyTrust;
+    const shouldFetchTrust = onlyCredit ? false : (manual || throttleState.trust.nextAllowedAt <= now);
     const isCreditPaused = !manual && throttleState.credit.pausedUntil > now;
-    const shouldFetchCredit = manual || (!isCreditPaused && throttleState.credit.nextAllowedAt <= now);
+    const shouldFetchCredit = onlyTrust ? false : (manual || (!isCreditPaused && throttleState.credit.nextAllowedAt <= now));
     if (!shouldFetchTrust && !shouldFetchCredit) {
       releaseCrossTabLock(lockToken);
       return;
@@ -986,6 +988,14 @@
       releaseCrossTabLock(lockToken);
       render();
     }
+  }
+
+  function refreshCredit(manual = true) {
+    return refreshAll(manual, { onlyCredit: true });
+  }
+
+  function refreshTrust(manual = true) {
+    return refreshAll(manual, { onlyTrust: true });
   }
 
   function activateHome() {
