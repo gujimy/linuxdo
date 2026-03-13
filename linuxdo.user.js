@@ -889,11 +889,11 @@
     }
 
     if (fab) {
-      const todayGain = state.credit?.todayGain;
-      if (todayGain === null || todayGain === undefined || Number.isNaN(Number(todayGain))) {
+      const estimatedGain = state.credit?.estimatedGain;
+      if (estimatedGain === null || estimatedGain === undefined || Number.isNaN(Number(estimatedGain))) {
         fab.textContent = '+0';
       } else {
-        const n = Number(todayGain);
+        const n = Number(estimatedGain);
         const v = Math.round(n);
         fab.textContent = `${v >= 0 ? '+' : ''}${v}`;
       }
