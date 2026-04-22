@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do 
 // @namespace    https://linux.do/
-// @version      1.0.0
+// @version      1.1.0
 // @description  等级 + LDC
 // @author       code01
 // @match        https://linux.do/*
@@ -85,6 +85,7 @@
   const uiState = {
     draggingFab: false,
     fabPos: null,
+    scheduleDockLayout: null,
     sections: { trust: true, credit: true },
   };
 
@@ -733,41 +734,11 @@
     const fabWrap = root.querySelector('#ldm-fab-wrap');
     const fab = root.querySelector('#ldm-fab');
 
-    const PANEL_DEFAULT_WIDTH = 176;
-    const PANEL_MIN_WIDTH = 160;
-    const PANEL_MAX_WIDTH = 220;
-    const PANEL_OLD_MIN_WIDTH = 240;
-    const PANEL_WIDTH_REDUCE_RATIO = 0.75;
-    const savedSize = gGet(KEYS.PANEL_SIZE, { width: PANEL_DEFAULT_WIDTH });
-    if (savedSize && typeof savedSize === 'object') {
-      // 旧版缓存宽度（最小 240）只迁移一次，避免每次加载重复缩小
-      if (!gGet(KEYS.PANEL_SIZE_MIGRATED, false)) {
-        const cachedWidth = Number(savedSize.width) || PANEL_DEFAULT_WIDTH;
-        if (cachedWidth >= PANEL_OLD_MIN_WIDTH) {
-          savedSize.width = Math.max(PANEL_MIN_WIDTH, Math.round(cachedWidth * PANEL_WIDTH_REDUCE_RATIO));
-          gSet(KEYS.PANEL_SIZE, {
-            width: savedSize.width,
-          });
-        }
-        gSet(KEYS.PANEL_SIZE_MIGRATED, true);
-      }
-
-      const w = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, window.innerWidth * 0.92, Number(savedSize.width) || PANEL_DEFAULT_WIDTH));
-      panel.style.width = `${Math.round(w)}px`;
-    }
+    const PANEL_FIXED_WIDTH = 167;
+    const PANEL_FIXED_LEFT = 0;
+    const PANEL_FIXED_TOP = 76;
 
     uiState.fabPos = gGet(KEYS.FAB_POS, null);
-
-    const getLeftBoundary = () => {
-      const selectors = ['.sidebar-wrapper', '.sidebar-container', '.sidebar-sections', '#main-outlet', '.wrap'];
-      for (const selector of selectors) {
-        const el = document.querySelector(selector);
-        if (!el) continue;
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 0 && rect.left > 0) return rect.left;
-      }
-      return null;
-    };
 
     const clampFabPosition = (leftPx, topPx) => {
       const vw = window.innerWidth || 1280;
@@ -780,38 +751,14 @@
 
     const applyDockLayout = () => {
       const vw = window.innerWidth || 1280;
-      const vh = window.innerHeight || 900;
-      const panelRect = panel.getBoundingClientRect();
-      const panelWidth = Math.round(panelRect.width || Number(savedSize?.width) || PANEL_DEFAULT_WIDTH);
-      const panelHeight = Math.round(panelRect.height || panel.scrollHeight || 0);
-      const leftBoundary = getLeftBoundary();
-      const viewportMargin = 0;
-      let nextWidth = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, vw * 0.92, panelWidth));
-      let panelLeft = 0;
-      let fabLeft = panelLeft + nextWidth - 40;
-
-      if (leftBoundary) {
-        const leftSpace = leftBoundary - viewportMargin;
-        if (leftSpace >= PANEL_MIN_WIDTH) {
-          nextWidth = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, Math.floor(leftSpace)));
-        }
-      }
-
-      panelLeft = Math.max(viewportMargin, Math.min(vw - nextWidth - viewportMargin, panelLeft));
-      fabLeft = Math.max(viewportMargin, panelLeft);
-      const preferredTop = 76;
-      const panelTop = panelHeight > 0
-        ? Math.max(12, Math.min(preferredTop, vh - panelHeight - 8))
-        : preferredTop;
-
-      panel.style.width = `${Math.round(nextWidth)}px`;
-      panel.style.left = `${Math.round(panelLeft)}px`;
-      panel.style.top = `${panelTop}px`;
+      panel.style.width = `${PANEL_FIXED_WIDTH}px`;
+      panel.style.left = `${PANEL_FIXED_LEFT}px`;
+      panel.style.top = `${PANEL_FIXED_TOP}px`;
       panel.style.bottom = 'auto';
       panel.style.height = 'auto';
       panel.style.maxHeight = 'none';
 
-      const defaultFabPos = clampFabPosition(fabLeft, Math.max(12, Math.round(panelTop - 48)));
+      const defaultFabPos = clampFabPosition(PANEL_FIXED_LEFT, PANEL_FIXED_TOP - 48);
       const nextFabPos = uiState.fabPos && typeof uiState.fabPos === 'object'
         ? clampFabPosition(uiState.fabPos.left, uiState.fabPos.top)
         : defaultFabPos;
@@ -822,12 +769,49 @@
       fabWrap.style.bottom = 'auto';
     };
 
+    let dockLayoutRaf1 = 0;
+    let dockLayoutRaf2 = 0;
+    let dockLayoutTimer1 = 0;
+    let dockLayoutTimer2 = 0;
+
+    const clearDockLayoutSchedule = () => {
+      if (dockLayoutRaf1) cancelAnimationFrame(dockLayoutRaf1);
+      if (dockLayoutRaf2) cancelAnimationFrame(dockLayoutRaf2);
+      if (dockLayoutTimer1) clearTimeout(dockLayoutTimer1);
+      if (dockLayoutTimer2) clearTimeout(dockLayoutTimer2);
+      dockLayoutRaf1 = 0;
+      dockLayoutRaf2 = 0;
+      dockLayoutTimer1 = 0;
+      dockLayoutTimer2 = 0;
+    };
+
+    const scheduleDockLayout = () => {
+      clearDockLayoutSchedule();
+      applyDockLayout();
+      dockLayoutRaf1 = requestAnimationFrame(() => {
+        applyDockLayout();
+        dockLayoutRaf2 = requestAnimationFrame(() => {
+          applyDockLayout();
+        });
+      });
+      dockLayoutTimer1 = setTimeout(() => {
+        applyDockLayout();
+      }, 140);
+      dockLayoutTimer2 = setTimeout(() => {
+        applyDockLayout();
+      }, 360);
+    };
+
+    uiState.scheduleDockLayout = scheduleDockLayout;
+
     applyDockLayout();
 
     const isOpen = !!gGet(KEYS.PANEL_OPEN, false);
     if (isOpen) {
       panel.style.display = 'flex';
-      applyDockLayout();
+      requestAnimationFrame(() => {
+        scheduleDockLayout();
+      });
     }
     const sectionState = gGet(KEYS.SECTION_STATE, { trust: true, credit: true });
     uiState.sections = {
@@ -900,11 +884,13 @@
       if (uiState.draggingFab) return;
       panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
       gSet(KEYS.PANEL_OPEN, panel.style.display !== 'none');
-      applyDockLayout();
+      requestAnimationFrame(() => {
+        scheduleDockLayout();
+      });
     });
 
     window.addEventListener('resize', () => {
-      applyDockLayout();
+      scheduleDockLayout();
     });
 
     const cached = gGet(KEYS.LAST_DATA, null);
@@ -973,6 +959,10 @@
         const v = Math.round(n);
         fab.textContent = `${v >= 0 ? '+' : ''}${v}`;
       }
+    }
+
+    if (typeof uiState.scheduleDockLayout === 'function') {
+      uiState.scheduleDockLayout();
     }
   }
 
