@@ -53,6 +53,7 @@
     FAB_POS: 'ldm_tw_fab_pos',
     SECTION_STATE: 'ldm_tw_section_state',
     PANEL_SIZE: 'ldm_tw_panel_size',
+    PANEL_SIZE_MIGRATED: 'ldm_tw_panel_size_migrated',
     THROTTLE_STATE: 'ldm_tw_throttle_state',
   };
 
@@ -82,7 +83,8 @@
   };
 
   const uiState = {
-    dragging: false,
+    draggingFab: false,
+    fabPos: null,
     sections: { trust: true, credit: true },
   };
 
@@ -627,7 +629,7 @@
               <div class="ldm-stat-label">今日额度</div>
               <div class="ldm-stat-value">${escapeHtml(credit.info.remain_quota)}</div>
             </div>
-            <div class="ldm-stat">
+            <div class="ldm-stat span-2">
               <div class="ldm-stat-label">预估涨分</div>
               <div class="ldm-stat-value ${gainClass}">${gainText}</div>
             </div>
@@ -658,73 +660,70 @@
 
     GM_addStyle(`
       #ldm-tw-root { all: initial; }
-      #ldm-tw-root, #ldm-tw-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+      #ldm-tw-root, #ldm-tw-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       #ldm-tw-root .ldm-hide { display: none; }
       #ldm-tw-root .ldm-show { display: block; }
-      #ldm-tw-root .ldm-muted { color: #64748b; }
-      #ldm-tw-root .ldm-ok { color: #059669; font-weight: 700; }
-      #ldm-tw-root .ldm-bad { color: #e11d48; font-weight: 700; }
-      #ldm-tw-root .ldm-empty { color: #64748b; font-size: 12px; }
-      #ldm-tw-root .ldm-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
-      #ldm-tw-root .ldm-scroll::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.45); border-radius: 9999px; }
+      #ldm-tw-root .ldm-muted { color: #6b7280; }
+      #ldm-tw-root .ldm-ok { color: #0f9d58; font-weight: 700; }
+      #ldm-tw-root .ldm-bad { color: #d93025; font-weight: 700; }
+      #ldm-tw-root .ldm-empty { color: #6b7280; font-size: 12px; line-height: 1.45; }
       #ldm-tw-root .ldm-spin { animation: ldm-spin 0.8s linear infinite; }
-      #ldm-tw-root .ldm-refresh-mini { width: 26px; height: 26px; border: 1px solid #86efac; border-radius: 999px; background: #f0fdf4; color: #047857; cursor: pointer; font-weight: 900; display:inline-flex; align-items:center; justify-content:center; font-size:12px; line-height:1; box-shadow: inset 0 1px 0 rgba(255,255,255,.8); }
+      #ldm-tw-root .ldm-refresh-mini { width: 24px; height: 24px; border: 1px solid rgba(209,213,219,.9); border-radius: 8px; background: rgba(255,255,255,.95); color: #4b5563; cursor: pointer; font-weight: 800; display:inline-flex; align-items:center; justify-content:center; font-size:11px; line-height:1; transition: background-color .18s ease, border-color .18s ease, color .18s ease; }
+      #ldm-tw-root .ldm-refresh-mini:hover { background: #f9fafb; border-color: #cbd5e1; color: #111827; }
       #ldm-tw-root .ldm-refresh-mini:disabled { opacity: 0.6; cursor: not-allowed; }
-      #ldm-tw-root .ldm-panel-body { padding: 12px; overflow-y: auto; flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; }
-      #ldm-tw-root .ldm-card { border: 1px solid #e2e8f0; border-radius: 16px; background: #fff; padding: 12px; }
-      #ldm-tw-root .ldm-block { display:flex; flex-direction:column; gap: 10px; }
+      #ldm-tw-root .ldm-card { border: 1px solid rgba(229,231,235,.95); border-radius: 12px; background: rgba(255,255,255,.94); padding: 7px 8px; box-shadow: 0 1px 6px rgba(17,24,39,.04); }
+      #ldm-tw-root .ldm-block { display:flex; flex-direction:column; gap: 5px; }
       #ldm-tw-root .ldm-block-head { display:flex; align-items:center; justify-content:space-between; }
-      #ldm-tw-root .ldm-block-title { font-size: 12px; color:#64748b; }
-      #ldm-tw-root .ldm-head-actions { display:flex; align-items:center; gap:8px; }
-      #ldm-tw-root .ldm-pill { font-size: 12px; border-radius: 999px; padding: 2px 8px; text-decoration:none; }
-      #ldm-tw-root .ldm-pill-ok { background:#dcfce7; color:#047857; }
-      #ldm-tw-root .ldm-pill-bad { background:#ffe4e6; color:#be123c; }
-      #ldm-tw-root .ldm-pill-link { background:#cffafe; color:#0e7490; }
-      #ldm-tw-root .ldm-toggle-btn { width: 32px; height:32px; border-radius:999px; border:1px solid #cbd5e1; background:#fff; color:#475569; cursor:pointer; font-size:16px; font-weight:700; line-height:1; }
-      #ldm-tw-root .ldm-level-row { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
-      #ldm-tw-root .ldm-level { font-size: 24px; line-height: 1.1; font-weight: 900; color:#0f172a; }
-      #ldm-tw-root .ldm-item { margin-bottom: 6px; }
-      #ldm-tw-root .ldm-item-top { display:flex; align-items:center; justify-content:space-between; font-size:12px; margin-bottom:2px; }
-      #ldm-tw-root .ldm-item-name { color:#334155; }
-      #ldm-tw-root .ldm-item-val { font-weight:700; }
-      #ldm-tw-root .ldm-progress { height: 6px; border-radius:999px; background:#e2e8f0; overflow:hidden; }
+      #ldm-tw-root .ldm-block-title { font-size: 11px; letter-spacing: .02em; color:#6b7280; font-weight: 700; }
+      #ldm-tw-root .ldm-head-actions { display:flex; align-items:center; gap:6px; }
+      #ldm-tw-root .ldm-pill { font-size: 11px; border-radius: 999px; padding: 3px 7px; text-decoration:none; border: 1px solid transparent; white-space: nowrap; }
+      #ldm-tw-root .ldm-pill-ok { background:#e7f7ec; color:#0f9d58; }
+      #ldm-tw-root .ldm-pill-bad { background:#fdecec; color:#d93025; }
+      #ldm-tw-root .ldm-pill-link { background:#f3f4f6; color:#374151; border-color: #e5e7eb; }
+      #ldm-tw-root .ldm-toggle-btn { width: 24px; height:24px; border-radius:8px; border:1px solid rgba(209,213,219,.9); background:#fff; color:#6b7280; cursor:pointer; font-size:12px; font-weight:700; line-height:1; transition: background-color .18s ease, border-color .18s ease, color .18s ease; }
+      #ldm-tw-root .ldm-toggle-btn:hover { background:#f9fafb; border-color:#cbd5e1; color:#111827; }
+      #ldm-tw-root .ldm-level-row { display:flex; align-items:center; gap:6px; margin-bottom:4px; flex-wrap: wrap; }
+      #ldm-tw-root .ldm-level { font-size: 17px; line-height: 1.05; font-weight: 800; color:#111827; }
+      #ldm-tw-root .ldm-item { margin-bottom: 5px; }
+      #ldm-tw-root .ldm-item-top { display:flex; flex-direction:row; align-items:flex-start; justify-content:space-between; font-size:11px; margin-bottom:2px; gap:6px; }
+      #ldm-tw-root .ldm-item-name { color:#4b5563; }
+      #ldm-tw-root .ldm-item-val { font-weight:700; line-height:1.2; text-align:right; word-break: break-word; }
+      #ldm-tw-root .ldm-progress { height: 4px; border-radius:999px; background:#e5e7eb; overflow:hidden; }
       #ldm-tw-root .ldm-progress-fill { height:100%; }
-      #ldm-tw-root .ldm-progress-ok { background:#10b981; }
-      #ldm-tw-root .ldm-progress-bad { background:#f43f5e; }
-      #ldm-tw-root .ldm-stats-grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:8px; margin-bottom:10px; }
-      #ldm-tw-root .ldm-stat { background:#f8fafc; border-radius:12px; padding:8px; }
+      #ldm-tw-root .ldm-progress-ok { background:#0f9d58; }
+      #ldm-tw-root .ldm-progress-bad { background:#d93025; }
+      #ldm-tw-root .ldm-stats-grid { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:4px; margin-bottom:5px; }
+      #ldm-tw-root .ldm-stat { background:#f9fafb; border: 1px solid rgba(229,231,235,.95); border-radius:10px; padding:5px 6px; }
+      #ldm-tw-root .ldm-stat.span-2 { grid-column: span 2; }
       #ldm-tw-root .ldm-stat-label { font-size:11px; color:#64748b; }
-      #ldm-tw-root .ldm-stat-value { font-size:13px; line-height:1.15; font-weight:800; color:#0f172a; margin-top:2px; white-space:nowrap; }
-      #ldm-tw-root .ldm-summary-box { background: linear-gradient(90deg, #ecfeff, #f0fdfa); border-radius: 12px; padding: 8px; font-size: 12px; margin-bottom:8px; }
-      #ldm-tw-root .ldm-row { display:flex; align-items:center; justify-content:space-between; font-size:12px; }
-      #ldm-tw-root .ldm-row + .ldm-row { margin-top:4px; }
-      #ldm-tw-root .ldm-row-key { color:#334155; font-weight:700; }
+      #ldm-tw-root .ldm-stat-value { font-size:13px; line-height:1.15; font-weight:800; color:#111827; margin-top:2px; white-space:normal; word-break: break-word; }
+      #ldm-tw-root .ldm-summary-box { background: #f9fafb; border: 1px solid rgba(229,231,235,.95); border-radius: 12px; padding: 6px 7px; font-size: 12px; margin-bottom:5px; }
+      #ldm-tw-root .ldm-row { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; font-size:11px; line-height:1.25; }
+      #ldm-tw-root .ldm-row + .ldm-row { margin-top:2px; }
+      #ldm-tw-root .ldm-row-key { color:#374151; font-weight:700; }
       #ldm-tw-root .ldm-list { display:flex; flex-direction:column; gap:4px; }
       #ldm-tw-root #ldm-panel {
-        resize: both;
-        min-width: 240px;
-        min-height: 220px;
-        max-width: 92vw;
-        max-height: 88vh;
+        resize: none;
+        min-width: 152px;
+        max-width: 220px;
+        gap: 5px;
       }
       @keyframes ldm-spin { to { transform: rotate(360deg); } }
     `);
 
     const root = document.createElement('div');
-    root.id = 'ldm-tw-root';
-    root.innerHTML = `
+      root.id = 'ldm-tw-root';
+      root.innerHTML = `
       <div id="ldm-fab-wrap" style="position:fixed;z-index:99999;">
-        <button id="ldm-fab" style="width:52px;height:52px;border-radius:999px;box-shadow:0 10px 20px rgba(2,6,23,.18);background:#fff;color:#059669;font-size:13px;font-weight:900;border:1px solid #bbf7d0;cursor:pointer;letter-spacing:.3px;">
+        <button id="ldm-fab" style="width:40px;height:40px;border-radius:12px;box-shadow:0 4px 12px rgba(17,24,39,.08);background:rgba(255,255,255,.96);color:#0f9d58;font-size:12px;font-weight:800;border:1px solid rgba(229,231,235,.95);cursor:pointer;letter-spacing:.1px;">
           +0
         </button>
       </div>
 
-      <div id="ldm-panel" style="position:fixed;z-index:99998;width:270px;height:88vh;max-width:70vw;border-radius:16px;border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.9);backdrop-filter:blur(10px);box-shadow:0 22px 45px rgba(15,23,42,.25);overflow:hidden;display:none;flex-direction:column;">
-        <div class="ldm-panel-body ldm-scroll">
-          <section class="ldm-card" id="ldm-trust-card"></section>
-          <section class="ldm-card" id="ldm-credit-card"></section>
-          <div id="ldm-msg" class="ldm-empty" style="display:none;color:#e11d48;"></div>
-        </div>
+      <div id="ldm-panel" style="position:fixed;z-index:99998;width:176px;max-width:220px;border-radius:0;border:none;background:transparent;backdrop-filter:none;box-shadow:none;overflow:visible;display:none;flex-direction:column;">
+        <section class="ldm-card" id="ldm-trust-card"></section>
+        <section class="ldm-card" id="ldm-credit-card"></section>
+        <div id="ldm-msg" class="ldm-empty" style="display:none;color:#e11d48;"></div>
       </div>
     `;
 
@@ -734,101 +733,178 @@
     const fabWrap = root.querySelector('#ldm-fab-wrap');
     const fab = root.querySelector('#ldm-fab');
 
-    const defaultHeight = Math.round((window.innerHeight || 900) * 0.88);
-    const savedSize = gGet(KEYS.PANEL_SIZE, { width: 270, height: defaultHeight });
+    const PANEL_DEFAULT_WIDTH = 176;
+    const PANEL_MIN_WIDTH = 160;
+    const PANEL_MAX_WIDTH = 220;
+    const PANEL_OLD_MIN_WIDTH = 240;
+    const PANEL_WIDTH_REDUCE_RATIO = 0.75;
+    const savedSize = gGet(KEYS.PANEL_SIZE, { width: PANEL_DEFAULT_WIDTH });
     if (savedSize && typeof savedSize === 'object') {
-      const w = Math.max(240, Math.min(window.innerWidth * 0.92, Number(savedSize.width) || 270));
-      const h = Math.max(220, Math.min(window.innerHeight * 0.88, Number(savedSize.height) || defaultHeight));
+      // 旧版缓存宽度（最小 240）只迁移一次，避免每次加载重复缩小
+      if (!gGet(KEYS.PANEL_SIZE_MIGRATED, false)) {
+        const cachedWidth = Number(savedSize.width) || PANEL_DEFAULT_WIDTH;
+        if (cachedWidth >= PANEL_OLD_MIN_WIDTH) {
+          savedSize.width = Math.max(PANEL_MIN_WIDTH, Math.round(cachedWidth * PANEL_WIDTH_REDUCE_RATIO));
+          gSet(KEYS.PANEL_SIZE, {
+            width: savedSize.width,
+          });
+        }
+        gSet(KEYS.PANEL_SIZE_MIGRATED, true);
+      }
+
+      const w = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, window.innerWidth * 0.92, Number(savedSize.width) || PANEL_DEFAULT_WIDTH));
       panel.style.width = `${Math.round(w)}px`;
-      panel.style.height = `${Math.round(h)}px`;
     }
 
-    const savedPos = gGet(KEYS.FAB_POS, { left: 0, bottom: 72 });
-    const applyPosition = (leftPx, bottomPx) => {
+    uiState.fabPos = gGet(KEYS.FAB_POS, null);
+
+    const getLeftBoundary = () => {
+      const selectors = ['.sidebar-wrapper', '.sidebar-container', '.sidebar-sections', '#main-outlet', '.wrap'];
+      for (const selector of selectors) {
+        const el = document.querySelector(selector);
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 0 && rect.left > 0) return rect.left;
+      }
+      return null;
+    };
+
+    const clampFabPosition = (leftPx, topPx) => {
       const vw = window.innerWidth || 1280;
       const vh = window.innerHeight || 900;
-      const panelHeight = Math.round(panel.getBoundingClientRect().height || Number(savedSize?.height) || defaultHeight);
-      const left = Math.max(0, Math.min(vw - 56, Number(leftPx) || 0));
-      const bottom = Math.max(8, Number(bottomPx) || 72);
-      const maxPanelBottom = Math.max(8, vh - panelHeight - 8);
-      const panelBottom = Math.min(bottom + 56 + 12, maxPanelBottom);
-      fabWrap.style.left = `${left}px`;
-      fabWrap.style.bottom = `${bottom}px`;
-      panel.style.left = `${left}px`;
-      panel.style.bottom = `${panelBottom}px`;
+      return {
+        left: Math.max(0, Math.min(vw - 40, Math.round(Number(leftPx) || 0))),
+        top: Math.max(12, Math.min(vh - 52, Math.round(Number(topPx) || 12))),
+      };
     };
-    // 兼容旧版存储（right/bottom）并迁移到 left/bottom
-    if (savedPos && typeof savedPos === 'object' && savedPos.left === undefined && savedPos.right !== undefined) {
-      const migratedLeft = Math.max(0, (window.innerWidth || 1280) - Number(savedPos.right || 20) - 48);
-      applyPosition(migratedLeft, savedPos.bottom);
-    } else {
-      applyPosition(savedPos.left, savedPos.bottom);
-    }
+
+    const applyDockLayout = () => {
+      const vw = window.innerWidth || 1280;
+      const vh = window.innerHeight || 900;
+      const panelRect = panel.getBoundingClientRect();
+      const panelWidth = Math.round(panelRect.width || Number(savedSize?.width) || PANEL_DEFAULT_WIDTH);
+      const panelHeight = Math.round(panelRect.height || panel.scrollHeight || 0);
+      const leftBoundary = getLeftBoundary();
+      const viewportMargin = 0;
+      let nextWidth = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, vw * 0.92, panelWidth));
+      let panelLeft = 0;
+      let fabLeft = panelLeft + nextWidth - 40;
+
+      if (leftBoundary) {
+        const leftSpace = leftBoundary - viewportMargin;
+        if (leftSpace >= PANEL_MIN_WIDTH) {
+          nextWidth = Math.max(PANEL_MIN_WIDTH, Math.min(PANEL_MAX_WIDTH, Math.floor(leftSpace)));
+        }
+      }
+
+      panelLeft = Math.max(viewportMargin, Math.min(vw - nextWidth - viewportMargin, panelLeft));
+      fabLeft = Math.max(viewportMargin, panelLeft);
+      const preferredTop = 76;
+      const panelTop = panelHeight > 0
+        ? Math.max(12, Math.min(preferredTop, vh - panelHeight - 8))
+        : preferredTop;
+
+      panel.style.width = `${Math.round(nextWidth)}px`;
+      panel.style.left = `${Math.round(panelLeft)}px`;
+      panel.style.top = `${panelTop}px`;
+      panel.style.bottom = 'auto';
+      panel.style.height = 'auto';
+      panel.style.maxHeight = 'none';
+
+      const defaultFabPos = clampFabPosition(fabLeft, Math.max(12, Math.round(panelTop - 48)));
+      const nextFabPos = uiState.fabPos && typeof uiState.fabPos === 'object'
+        ? clampFabPosition(uiState.fabPos.left, uiState.fabPos.top)
+        : defaultFabPos;
+
+      uiState.fabPos = nextFabPos;
+      fabWrap.style.left = `${nextFabPos.left}px`;
+      fabWrap.style.top = `${nextFabPos.top}px`;
+      fabWrap.style.bottom = 'auto';
+    };
+
+    applyDockLayout();
 
     const isOpen = !!gGet(KEYS.PANEL_OPEN, false);
-    if (isOpen) panel.style.display = 'flex';
+    if (isOpen) {
+      panel.style.display = 'flex';
+      applyDockLayout();
+    }
     const sectionState = gGet(KEYS.SECTION_STATE, { trust: true, credit: true });
     uiState.sections = {
       trust: sectionState?.trust !== false,
       credit: sectionState?.credit !== false,
     };
 
-    // 拖动悬浮按钮（位置记忆，支持鼠标/触屏）
     fab.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      uiState.dragging = false;
+      e.preventDefault();
+
+      uiState.draggingFab = false;
       const startX = e.clientX;
       const startY = e.clientY;
       const currentLeft = parseFloat(fabWrap.style.left) || 0;
-      const currentBottom = parseFloat(fabWrap.style.bottom) || 20;
+      const currentTop = parseFloat(fabWrap.style.top) || 12;
+      const pointerId = e.pointerId;
+      let cleanedUp = false;
 
       const onMove = (ev) => {
-        uiState.dragging = true;
-        const nextLeft = currentLeft + (ev.clientX - startX);
-        const nextBottom = currentBottom + (startY - ev.clientY);
-        applyPosition(nextLeft, nextBottom);
+        if (ev.pointerId !== pointerId) return;
+        if (Math.abs(ev.clientX - startX) < 8 && Math.abs(ev.clientY - startY) < 8) return;
+        uiState.draggingFab = true;
+        uiState.fabPos = clampFabPosition(
+          currentLeft + (ev.clientX - startX),
+          currentTop + (ev.clientY - startY),
+        );
+        fabWrap.style.left = `${uiState.fabPos.left}px`;
+        fabWrap.style.top = `${uiState.fabPos.top}px`;
       };
 
-      const onUp = () => {
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
-        gSet(KEYS.FAB_POS, {
-          left: parseFloat(fabWrap.style.left) || 0,
-          bottom: parseFloat(fabWrap.style.bottom) || 20,
-        });
-        setTimeout(() => { uiState.dragging = false; }, 50);
+        document.removeEventListener('pointercancel', onCancel);
+        window.removeEventListener('blur', onCancel);
+      };
+
+      const onUp = (ev) => {
+        if (ev.pointerId !== pointerId) return;
+        cleanup();
+
+        if (uiState.draggingFab) {
+          uiState.fabPos = clampFabPosition(
+            currentLeft + (ev.clientX - startX),
+            currentTop + (ev.clientY - startY),
+          );
+          gSet(KEYS.FAB_POS, uiState.fabPos);
+        }
+
+        setTimeout(() => {
+          uiState.draggingFab = false;
+        }, 0);
+      };
+
+      const onCancel = () => {
+        cleanup();
+        uiState.draggingFab = false;
       };
 
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onCancel);
+      window.addEventListener('blur', onCancel);
     });
 
     fab.addEventListener('click', () => {
-      if (uiState.dragging) return;
+      if (uiState.draggingFab) return;
       panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
       gSet(KEYS.PANEL_OPEN, panel.style.display !== 'none');
+      applyDockLayout();
     });
 
-    if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(() => {
-        const rect = panel.getBoundingClientRect();
-        if (!rect.width || !rect.height) return;
-        gSet(KEYS.PANEL_SIZE, {
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-        });
-        // 缩放后重新约束位置，避免顶部出界
-        const left = parseFloat(fabWrap.style.left) || 0;
-        const bottom = parseFloat(fabWrap.style.bottom) || 20;
-        applyPosition(left, bottom);
-      });
-      ro.observe(panel);
-    }
-
     window.addEventListener('resize', () => {
-      const left = parseFloat(fabWrap.style.left) || 0;
-      const bottom = parseFloat(fabWrap.style.bottom) || 20;
-      applyPosition(left, bottom);
+      applyDockLayout();
     });
 
     const cached = gGet(KEYS.LAST_DATA, null);
