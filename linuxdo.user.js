@@ -546,15 +546,15 @@
     const arrow = expanded ? '▾' : '▸';
 
     return `
-        <div class="ldm-block">
-          <div class="ldm-block-head">
-            <div class="ldm-block-title">等级</div>
-            <div class="ldm-head-actions">
-              <button id="ldm-refresh-trust" class="ldm-refresh-mini" title="刷新 等级">↻</button>
-              ${connectLink}
-              <button id="ldm-toggle-trust" class="ldm-toggle-btn">${arrow}</button>
-            </div>
+      <div class="ldm-block">
+        <div class="ldm-block-head">
+          <div class="ldm-block-title">等级</div>
+          <div class="ldm-head-actions">
+            <button id="ldm-refresh-trust" class="ldm-refresh-mini" title="刷新 等级">↻</button>
+            ${connectLink}
+            <button id="ldm-toggle-trust" class="ldm-toggle-btn">${arrow}</button>
           </div>
+        </div>
         <div class="${expanded ? 'ldm-show' : 'ldm-hide'}">
           <div class="ldm-level-row">
             <div class="ldm-level">Lv.${escapeHtml(trust.level ?? '--')}</div>
