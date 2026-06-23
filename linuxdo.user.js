@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Linux.do 
+// @name         Linux.do
 // @namespace    https://linux.do/
-// @version      1.1.0
+// @version      1.2.1
 // @description  等级 + LDC
 // @author       code01
 // @match        https://linux.do/*
@@ -20,19 +20,30 @@
 
 (function () {
   'use strict';
+
+  // 调试模式开关（生产环境设为 false）
+  const DEBUG = false;
+
+  // 调试日志辅助函数
+  const debug = {
+    log: (...args) => DEBUG && console.log(...args),
+    warn: (...args) => DEBUG && console.warn(...args),
+    error: (...args) => console.error(...args), // 错误始终输出
+  };
+
   let refreshTimer = null;
   let routeWatcherStarted = false;
   let lastHref = location.href;
   const TAB_ID = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   const THROTTLE = {
-    BASE_INTERVAL_MS: 5 * 60 * 1000,
-    MIN_INTERVAL_MS: 60 * 1000,
-    MANUAL_MIN_INTERVAL_MS: 3 * 1000,
-    MAX_BACKOFF_MS: 40 * 60 * 1000,
-    CREDIT_401_PAUSE_MS: 20 * 60 * 1000,
-    CROSS_TAB_LOCK_MS: 20 * 1000,
-    SAME_ORIGIN_TIMEOUT_MS: 15000,
+    BASE_INTERVAL_MS: 5 * 60 * 1000,        // 基础刷新间隔: 5分钟
+    MIN_INTERVAL_MS: 60 * 1000,             // 最小请求间隔: 1分钟 (防止过载)
+    MANUAL_MIN_INTERVAL_MS: 3 * 1000,       // 手动刷新最小间隔: 3秒
+    MAX_BACKOFF_MS: 40 * 60 * 1000,         // 最大退避时间: 40分钟
+    CREDIT_401_PAUSE_MS: 20 * 60 * 1000,    // Credit 401错误暂停时间: 20分钟
+    CROSS_TAB_LOCK_MS: 20 * 1000,           // 跨标签页锁持续时间: 20秒
+    SAME_ORIGIN_TIMEOUT_MS: 15000,          // 同源请求超时: 15秒
   };
 
   function isLinuxdoPage() {
@@ -51,9 +62,8 @@
     PANEL_OPEN: 'ldm_tw_open',
     LAST_DATA: 'ldm_tw_data',
     FAB_POS: 'ldm_tw_fab_pos',
+    PANEL_POS: 'ldm_tw_panel_pos',
     SECTION_STATE: 'ldm_tw_section_state',
-    PANEL_SIZE: 'ldm_tw_panel_size',
-    PANEL_SIZE_MIGRATED: 'ldm_tw_panel_size_migrated',
     THROTTLE_STATE: 'ldm_tw_throttle_state',
   };
 
@@ -84,7 +94,9 @@
 
   const uiState = {
     draggingFab: false,
+    draggingPanel: false,
     fabPos: null,
+    panelPos: null,
     scheduleDockLayout: null,
     sections: { trust: true, credit: true },
   };
@@ -226,12 +238,14 @@
   }
 
   function escapeHtml(str) {
-    return String(str ?? '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
+    const htmlEscapeMap = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    };
+    return String(str ?? '').replace(/[&<>"']/g, char => htmlEscapeMap[char]);
   }
 
   function formatReadTime(seconds) {
@@ -242,6 +256,10 @@
     const h = Math.floor(mins / 60);
     const m = mins % 60;
     return m ? `${h}小时${m}分` : `${h}小时`;
+  }
+
+  function parseNumber(text) {
+    return parseFloat(String(text ?? '0').replace(/[,\s]/g, '')) || 0;
   }
 
   function getTodayDateString() {
@@ -314,18 +332,25 @@
   }
 
   function parseConnectCard(doc) {
-    const card = Array.from(doc.querySelectorAll('div.card')).find((div) => {
-      const h2 = div.querySelector('h2.card-title');
-      return h2 && /信任级别/.test(h2.textContent || '') && /的要求/.test(h2.textContent || '');
+    const card = Array.from(doc.querySelectorAll('div.card, .card')).find((div) => {
+      const h2 = div.querySelector('h2.card-title, h2, [class*="card-title"]');
+      const titleText = h2?.textContent || '';
+      return /信任级别.*的要求/.test(titleText);
     });
-    if (!card) return null;
+    if (!card) {
+      debug.log('[LDM] parseConnectCard: 未找到信任级别卡片');
+      return null;
+    }
 
-    const h2 = card.querySelector('h2.card-title');
+    const h2 = card.querySelector('h2.card-title, h2, [class*="card-title"]');
     const titleMatch = (h2?.textContent || '').match(/信任级别\s*(\d+)\s*的要求/);
     const targetLevel = titleMatch ? parseInt(titleMatch[1], 10) : null;
-    const badge = card.querySelector('.card-header .badge');
-    const isAchieved = !!(badge && badge.classList.contains('badge-success'));
+    const badge = card.querySelector('.badge, [class*="badge"]');
+    const badgeText = badge?.textContent?.trim() || '';
+    const isAchieved = /已达到|已达标/.test(badgeText);
     const level = targetLevel == null ? null : (isAchieved ? targetLevel : targetLevel - 1);
+
+    debug.log('[LDM] parseConnectCard: targetLevel=', targetLevel, 'isAchieved=', isAchieved, 'level=', level);
 
     const items = [];
     let allPassed = true;
@@ -338,48 +363,208 @@
       items.push({ name, current: currentNum, target: targetNum, pct, isGood });
     };
 
-    card.querySelectorAll('.tl3-ring').forEach((ring) => {
-      const name = ring.querySelector('.tl3-ring-label')?.textContent?.trim();
-      const currentText = ring.querySelector('.tl3-ring-current')?.textContent?.trim();
-      const targetText = ring.querySelector('.tl3-ring-target')?.textContent?.replace(/^[\s/]+/, '').trim();
-      const isGood = ring.querySelector('.tl3-ring-circle')?.classList.contains('met') || false;
-      if (!name || !currentText) return;
-      pushItem(name, parseFloat(currentText.replace(/,/g, '')) || 0, parseFloat((targetText || '0').replace(/,/g, '')) || 0, isGood);
+    // 通用解析：查找所有包含"活跃程度"的区域
+    const allElements = Array.from(card.querySelectorAll('*'));
+    debug.log('[LDM] card 包含的所有元素数量:', allElements.length);
+
+    // 策略：找到标题元素，然后查找它的下一个兄弟元素（真正的数据容器）
+    const activityTitle = allElements.find(el => {
+      const text = (el.textContent || '').trim();
+      const isTitle = text === '活跃程度' || /^活跃程度$/.test(text);
+      return isTitle && el.children.length === 0;
     });
 
-    card.querySelectorAll('.tl3-bar-item').forEach((bar) => {
-      const name = bar.querySelector('.tl3-bar-label')?.textContent?.trim();
-      const nums = bar.querySelector('.tl3-bar-nums')?.textContent?.trim();
-      if (!name || !nums) return;
-      const parts = nums.split('/');
-      const cur = parseFloat((parts[0] || '0').replace(/,/g, '').trim()) || 0;
-      const tar = parseFloat((parts[1] || '0').replace(/,/g, '').trim()) || 0;
-      const isGood = bar.querySelector('.tl3-bar-nums')?.classList.contains('met') || false;
-      pushItem(name, cur, tar, isGood);
+    debug.log('[LDM] activityTitle:', !!activityTitle);
+
+    let activitySection = null;
+    if (activityTitle) {
+      activitySection = activityTitle.nextElementSibling;
+      debug.log('[LDM] activitySection (nextSibling):', !!activitySection);
+    }
+
+    // 如果找不到，尝试旧逻辑
+    if (!activitySection) {
+      activitySection = allElements.find(el =>
+        (el.textContent || '').includes('活跃程度') && el.children.length > 0
+      );
+      debug.log('[LDM] activitySection (fallback):', !!activitySection);
+    }
+
+    if (activitySection) {
+      debug.log('[LDM] 找到活跃程度数据区域');
+
+      // 查找所有包含 "访问天数"、"浏览话题"、"浏览帖子" 的元素
+      const activityItems = Array.from(activitySection.querySelectorAll('*')).filter(el => {
+        const text = (el.textContent || '').trim();
+        return /^(访问天数|浏览话题|浏览帖子)$/.test(text);
+      });
+
+      debug.log('[LDM] 找到', activityItems.length, '个活跃程度项');
+
+      activityItems.forEach(labelEl => {
+        const name = labelEl.textContent.trim();
+
+        // 向上查找包含数字的父容器
+        let parent = labelEl.parentElement;
+        while (parent && parent !== card) {
+          const allText = parent.textContent || '';
+          const match = allText.match(/(\d+)\s*\/\s*(\d+)/);
+          if (match) {
+            const current = parseNumber(match[1]);
+            const target = parseNumber(match[2]);
+            const isGood = current >= target;
+            debug.log('[LDM] activity:', { name, current, target, isGood });
+            pushItem(name, current, target, isGood);
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      });
+    }
+
+    // 解析条形图区域（互动参与）
+    const barTitle = allElements.find(el => {
+      const text = (el.textContent || '').trim();
+      return text === '互动参与' || /^互动参与$/.test(text);
     });
 
-    card.querySelectorAll('.tl3-quota-card').forEach((quota) => {
-      const name = quota.querySelector('.tl3-quota-label')?.textContent?.trim();
-      const nums = quota.querySelector('.tl3-quota-nums')?.textContent?.trim();
-      if (!name || !nums) return;
-      const parts = nums.split('/');
-      const cur = parseFloat((parts[0] || '0').replace(/,/g, '').trim()) || 0;
-      const tar = parseFloat((parts[1] || '0').replace(/,/g, '').trim()) || 0;
-      const isGood = quota.classList.contains('met');
-      pushItem(name, cur, tar, isGood);
+    let barSection = null;
+    if (barTitle) {
+      barSection = barTitle.nextElementSibling;
+      debug.log('[LDM] barSection (nextSibling):', !!barSection);
+    }
+
+    if (!barSection) {
+      barSection = allElements.find(el =>
+        (el.textContent || '').includes('互动参与') && el.children.length > 0
+      );
+      debug.log('[LDM] barSection (fallback):', !!barSection);
+    }
+
+    if (barSection) {
+      debug.log('[LDM] 找到互动参与数据区域');
+
+      // 查找所有包含互动参与指标的元素
+      const barLabels = Array.from(barSection.querySelectorAll('*')).filter(el => {
+        const text = (el.textContent || '').trim();
+        return /^(回复话题|点赞|获赞|获赞天数|获赞用户)$/.test(text);
+      });
+
+      debug.log('[LDM] 找到', barLabels.length, '个互动参与标签');
+
+      barLabels.forEach(labelEl => {
+        const name = labelEl.textContent.trim();
+
+        // 向上查找包含数字的父容器
+        let parent = labelEl.parentElement;
+        while (parent && parent !== card) {
+          const allText = parent.textContent || '';
+          const match = allText.match(/(\d+)\s*\/\s*(\d+)/);
+          if (match) {
+            const current = parseNumber(match[1]);
+            const target = parseNumber(match[2]);
+            const isGood = current >= target;
+            debug.log('[LDM] interaction:', { name, current, target, isGood });
+            pushItem(name, current, target, isGood);
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      });
+    }
+
+    // 解析合规记录（被举报、举报用户）
+    const complianceTitle = allElements.find(el => {
+      const text = (el.textContent || '').trim();
+      return text === '合规记录' || /^合规记录$/.test(text);
     });
 
-    // 否决项：通常目标值为 0（例如近100天封禁次数）
-    card.querySelectorAll('.tl3-veto-item').forEach((veto) => {
-      const name = veto.querySelector('.tl3-veto-label')?.textContent?.trim();
-      const valueText = veto.querySelector('.tl3-veto-value')?.textContent?.trim();
-      if (!name || !valueText) return;
-      const cur = parseFloat(valueText.replace(/,/g, '').trim()) || 0;
-      const isGood = veto.classList.contains('met');
-      pushItem(name, cur, 0, isGood);
-    });
+    let complianceSection = null;
+    if (complianceTitle) {
+      complianceSection = complianceTitle.nextElementSibling;
+      debug.log('[LDM] complianceSection (nextSibling):', !!complianceSection);
+    }
 
-    if (!items.length) return null;
+    if (!complianceSection) {
+      complianceSection = allElements.find(el =>
+        (el.textContent || '').includes('合规记录') && el.children.length > 0
+      );
+      debug.log('[LDM] complianceSection (fallback):', !!complianceSection);
+    }
+
+    if (complianceSection) {
+      debug.log('[LDM] 找到合规记录数据区域');
+
+      // 查找配额项（被举报帖子、举报用户）
+      const quotaLabels = Array.from(complianceSection.querySelectorAll('*')).filter(el => {
+        const text = (el.textContent || '').trim();
+        return /^(被举报帖子|举报用户)$/.test(text);
+      });
+
+      debug.log('[LDM] 找到', quotaLabels.length, '个配额标签');
+
+      quotaLabels.forEach(labelEl => {
+        const name = labelEl.textContent.trim();
+
+        // 向上查找包含数字的父容器
+        let parent = labelEl.parentElement;
+        while (parent && parent !== card) {
+          const allText = parent.textContent || '';
+          const match = allText.match(/(\d+)\s*\/\s*(\d+)/);
+          if (match) {
+            const current = parseNumber(match[1]);
+            const target = parseNumber(match[2]);
+            const isGood = current <= target; // 注意：配额项是越少越好
+            debug.log('[LDM] quota:', { name, current, target, isGood });
+            pushItem(name, current, target, isGood);
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      });
+
+      // 解析否决项（被禁言、被封禁）
+      const vetoLabels = Array.from(complianceSection.querySelectorAll('*')).filter(el => {
+        const text = (el.textContent || '').trim();
+        return /^(被禁言|被封禁)$/.test(text);
+      });
+
+      debug.log('[LDM] 找到', vetoLabels.length, '个否决标签');
+
+      const processedVetos = new Set();
+      vetoLabels.forEach(labelEl => {
+        const name = labelEl.textContent.trim();
+        if (processedVetos.has(name)) return;
+        processedVetos.add(name);
+
+        // 向上查找包含数字的父容器
+        let parent = labelEl.parentElement;
+        while (parent && parent !== card) {
+          const allText = parent.textContent || '';
+          // 查找独立的数字（不包含斜杠）
+          const numMatch = Array.from(parent.querySelectorAll('*')).find(el => {
+            const text = (el.textContent || '').trim();
+            return /^\d+$/.test(text) && !text.includes('/');
+          });
+
+          if (numMatch) {
+            const current = parseNumber(numMatch.textContent);
+            const isGood = current === 0;
+            debug.log('[LDM] veto:', { name, current, isGood });
+            pushItem(name, current, 0, isGood);
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      });
+    }
+
+    debug.log('[LDM] parseConnectCard: 总共收集到', items.length, '个条目');
+
+    if (!items.length) {
+      debug.log('[LDM] parseConnectCard: items 为空，尝试 fallback');
+      return null;
+    }
 
     return {
       level,
@@ -389,23 +574,43 @@
   }
 
   async function fetchTrustData() {
+    debug.log('[LDM] fetchTrustData: 开始获取信任等级数据');
+
+    // 直接使用 GM_xmlhttpRequest（fetch 会被 CORS 阻止）
     try {
+      debug.log('[LDM] 使用 GM_xmlhttpRequest 获取 Connect 页面');
       const html = await gmRequest(API.TRUST_CONNECT, {
-        headers: { Referer: 'https://connect.linux.do/' },
+        headers: {
+          'Referer': 'https://connect.linux.do/',
+          'User-Agent': navigator.userAgent,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        },
       });
+
+      debug.log('[LDM] fetchTrustData: 成功获取 HTML，长度:', html.length);
       const doc = new DOMParser().parseFromString(html, 'text/html');
       const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
+      debug.log('[LDM] fetchTrustData: loginHint=', !!loginHint);
+
       if (!loginHint) {
+        debug.log('[LDM] fetchTrustData: 未检测到登录页面，尝试解析 Connect 卡片');
         const parsed = parseConnectCard(doc);
+        debug.log('[LDM] fetchTrustData: parseConnectCard 返回:', parsed);
         if (parsed) {
           return {
             source: 'connect',
             ...parsed,
           };
         }
+        debug.log('[LDM] fetchTrustData: parseConnectCard 返回 null，fallback 到 Summary API');
       }
-    } catch (_) {
-      // fallback
+    } catch (err) {
+      debug.error('[LDM] fetchTrustData: Connect 请求失败:', err);
+      debug.error('[LDM] 错误详情 - status:', err.status, 'message:', err.message);
+      if (err.status === 403) {
+        debug.warn('[LDM] Connect 返回 403，可能是反爬虫保护，使用 Summary API');
+      }
     }
 
     const username = await fetchCurrentUsername();
@@ -486,7 +691,7 @@
     const communityBalance = Number(info['community-balance'] ?? info.community_balance ?? 0);
     const estimatedGain = gamificationScore === null || Number.isNaN(gamificationScore)
       ? null
-      : gamificationScore - communityBalance;
+      : Math.round((gamificationScore - communityBalance) * 100) / 100;
 
     let weekIncome = 0;
     let weekExpense = 0;
@@ -656,6 +861,8 @@
     `;
   }
 
+  let resizeListenerAttached = false;
+
   function ensureUI() {
     if (document.getElementById('ldm-tw-root')) return;
 
@@ -674,8 +881,9 @@
       #ldm-tw-root .ldm-refresh-mini:disabled { opacity: 0.6; cursor: not-allowed; }
       #ldm-tw-root .ldm-card { border: 1px solid rgba(229,231,235,.95); border-radius: 12px; background: rgba(255,255,255,.94); padding: 7px 8px; box-shadow: 0 1px 6px rgba(17,24,39,.04); }
       #ldm-tw-root .ldm-block { display:flex; flex-direction:column; gap: 5px; }
-      #ldm-tw-root .ldm-block-head { display:flex; align-items:center; justify-content:space-between; }
-      #ldm-tw-root .ldm-block-title { font-size: 11px; letter-spacing: .02em; color:#6b7280; font-weight: 700; }
+      #ldm-tw-root .ldm-block-head { display:flex; align-items:center; justify-content:space-between; cursor: grab; user-select: none; }
+      #ldm-tw-root .ldm-block-head:active { cursor: grabbing; }
+      #ldm-tw-root .ldm-block-title { font-size: 11px; letter-spacing: .02em; color:#6b7280; font-weight: 700; pointer-events: none; }
       #ldm-tw-root .ldm-head-actions { display:flex; align-items:center; gap:6px; }
       #ldm-tw-root .ldm-pill { font-size: 11px; border-radius: 999px; padding: 3px 7px; text-decoration:none; border: 1px solid transparent; white-space: nowrap; }
       #ldm-tw-root .ldm-pill-ok { background:#e7f7ec; color:#0f9d58; }
@@ -735,10 +943,11 @@
     const fab = root.querySelector('#ldm-fab');
 
     const PANEL_FIXED_WIDTH = 167;
-    const PANEL_FIXED_LEFT = 0;
-    const PANEL_FIXED_TOP = 76;
+    const PANEL_DEFAULT_LEFT = 0;
+    const PANEL_DEFAULT_TOP = 76;
 
     uiState.fabPos = gGet(KEYS.FAB_POS, null);
+    uiState.panelPos = gGet(KEYS.PANEL_POS, null);
 
     const clampFabPosition = (leftPx, topPx) => {
       const vw = window.innerWidth || 1280;
@@ -749,16 +958,34 @@
       };
     };
 
+    const clampPanelPosition = (leftPx, topPx) => {
+      const vw = window.innerWidth || 1280;
+      const vh = window.innerHeight || 900;
+      return {
+        left: Math.max(0, Math.min(vw - PANEL_FIXED_WIDTH, Math.round(Number(leftPx) || 0))),
+        top: Math.max(0, Math.min(vh - 100, Math.round(Number(topPx) || 0))),
+      };
+    };
+
     const applyDockLayout = () => {
       const vw = window.innerWidth || 1280;
       panel.style.width = `${PANEL_FIXED_WIDTH}px`;
-      panel.style.left = `${PANEL_FIXED_LEFT}px`;
-      panel.style.top = `${PANEL_FIXED_TOP}px`;
       panel.style.bottom = 'auto';
       panel.style.height = 'auto';
       panel.style.maxHeight = 'none';
 
-      const defaultFabPos = clampFabPosition(PANEL_FIXED_LEFT, PANEL_FIXED_TOP - 48);
+      // 应用面板位置
+      const defaultPanelPos = clampPanelPosition(PANEL_DEFAULT_LEFT, PANEL_DEFAULT_TOP);
+      const nextPanelPos = uiState.panelPos && typeof uiState.panelPos === 'object'
+        ? clampPanelPosition(uiState.panelPos.left, uiState.panelPos.top)
+        : defaultPanelPos;
+
+      uiState.panelPos = nextPanelPos;
+      panel.style.left = `${nextPanelPos.left}px`;
+      panel.style.top = `${nextPanelPos.top}px`;
+
+      // 应用 FAB 位置
+      const defaultFabPos = clampFabPosition(PANEL_DEFAULT_LEFT, PANEL_DEFAULT_TOP - 48);
       const nextFabPos = uiState.fabPos && typeof uiState.fabPos === 'object'
         ? clampFabPosition(uiState.fabPos.left, uiState.fabPos.top)
         : defaultFabPos;
@@ -889,9 +1116,82 @@
       });
     });
 
-    window.addEventListener('resize', () => {
-      scheduleDockLayout();
+    // 面板拖动功能
+    panel.addEventListener('pointerdown', (e) => {
+      // 只在面板顶部区域（卡片头部）触发拖动
+      const target = e.target;
+      const isCardHeader = target.closest('.ldm-block-head') || target.closest('.ldm-block-title');
+      if (!isCardHeader) return;
+
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      uiState.draggingPanel = false;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const currentLeft = parseFloat(panel.style.left) || 0;
+      const currentTop = parseFloat(panel.style.top) || PANEL_DEFAULT_TOP;
+      const pointerId = e.pointerId;
+      let cleanedUp = false;
+
+      const onMove = (ev) => {
+        if (ev.pointerId !== pointerId) return;
+        if (Math.abs(ev.clientX - startX) < 8 && Math.abs(ev.clientY - startY) < 8) return;
+        uiState.draggingPanel = true;
+        panel.style.cursor = 'grabbing';
+        uiState.panelPos = clampPanelPosition(
+          currentLeft + (ev.clientX - startX),
+          currentTop + (ev.clientY - startY),
+        );
+        panel.style.left = `${uiState.panelPos.left}px`;
+        panel.style.top = `${uiState.panelPos.top}px`;
+      };
+
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        document.removeEventListener('pointercancel', onCancel);
+        window.removeEventListener('blur', onCancel);
+        panel.style.cursor = '';
+      };
+
+      const onUp = (ev) => {
+        if (ev.pointerId !== pointerId) return;
+        cleanup();
+
+        if (uiState.draggingPanel) {
+          uiState.panelPos = clampPanelPosition(
+            currentLeft + (ev.clientX - startX),
+            currentTop + (ev.clientY - startY),
+          );
+          gSet(KEYS.PANEL_POS, uiState.panelPos);
+        }
+
+        setTimeout(() => {
+          uiState.draggingPanel = false;
+        }, 0);
+      };
+
+      const onCancel = () => {
+        cleanup();
+        uiState.draggingPanel = false;
+      };
+
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+      document.addEventListener('pointercancel', onCancel);
+      window.addEventListener('blur', onCancel);
     });
+
+    if (!resizeListenerAttached) {
+      window.addEventListener('resize', () => {
+        scheduleDockLayout();
+      });
+      resizeListenerAttached = true;
+    }
 
     const cached = gGet(KEYS.LAST_DATA, null);
     if (cached && typeof cached === 'object') {
@@ -946,6 +1246,12 @@
     if (state.error) {
       msgEl.textContent = state.error;
       msgEl.style.display = 'block';
+      // 根据消息内容设置颜色
+      if (state.error.includes('成功')) {
+        msgEl.style.color = '#0f9d58'; // 绿色表示成功
+      } else {
+        msgEl.style.color = '#e11d48'; // 红色表示错误
+      }
     } else {
       msgEl.style.display = 'none';
     }
@@ -977,16 +1283,24 @@
 
     if (state.loading) return;
     const now = Date.now();
-    const throttleState = readThrottleState();
     const minInterval = manual ? THROTTLE.MANUAL_MIN_INTERVAL_MS : THROTTLE.MIN_INTERVAL_MS;
     if (state.lastRequestAt > 0 && now - state.lastRequestAt < minInterval) return;
     const lockToken = tryAcquireCrossTabLock();
     if (!lockToken) return;
+
+    const latestThrottle = readThrottleState();
     const onlyCredit = !!opts.onlyCredit;
     const onlyTrust = !!opts.onlyTrust;
-    const shouldFetchTrust = onlyCredit ? false : (manual || throttleState.trust.nextAllowedAt <= now);
-    const isCreditPaused = !manual && throttleState.credit.pausedUntil > now;
-    const shouldFetchCredit = onlyTrust ? false : (manual || (!isCreditPaused && throttleState.credit.nextAllowedAt <= now));
+    let shouldFetchTrust = onlyCredit ? false : (manual || latestThrottle.trust.nextAllowedAt <= now);
+    const isCreditPaused = !manual && latestThrottle.credit.pausedUntil > now;
+    let shouldFetchCredit = onlyTrust ? false : (manual || (!isCreditPaused && latestThrottle.credit.nextAllowedAt <= now));
+
+    if (!manual) {
+      const revalidatedThrottle = readThrottleState();
+      if (revalidatedThrottle.trust.nextAllowedAt > now) shouldFetchTrust = false;
+      if (revalidatedThrottle.credit.nextAllowedAt > now || revalidatedThrottle.credit.pausedUntil > now) shouldFetchCredit = false;
+    }
+
     if (!shouldFetchTrust && !shouldFetchCredit) {
       releaseCrossTabLock(lockToken);
       return;
@@ -1010,10 +1324,13 @@
         creditPromise,
       ]);
       const errs = [];
+      const success = [];
+
       if (shouldFetchTrust) {
         if (trustRes.status === 'fulfilled') {
           state.trust = trustRes.value;
           updateSourceSuccess('trust');
+          if (manual) success.push('等级');
         } else {
           errs.push(`等级: ${trustRes.reason?.message || '失败'}`);
           updateSourceFailure('trust');
@@ -1024,6 +1341,7 @@
         if (creditRes.status === 'fulfilled') {
           state.credit = creditRes.value;
           updateSourceSuccess('credit');
+          if (manual) success.push('LDC');
         } else {
           const creditErr = creditRes.reason;
           errs.push(`LDC: ${formatCreditError(creditErr)}`);
@@ -1037,11 +1355,31 @@
         }
       }
 
-      if (errs.length) {
-        state.error = manual ? `部分刷新失败：${errs.join('；')}` : `部分数据更新失败：${errs.join('；')}`;
-      } else if (isCreditPaused) {
-        state.error = `LDC 自动请求已暂停至 ${formatClockTime(throttleState.credit.pausedUntil)}，可点击刷新重试`;
+      // 手动刷新时显示结果提示
+      if (manual) {
+        if (errs.length && success.length) {
+          state.error = `${success.join('、')}刷新成功；${errs.join('；')}`;
+        } else if (errs.length) {
+          state.error = `刷新失败：${errs.join('；')}`;
+        } else if (success.length) {
+          state.error = `${success.join('、')}刷新成功 ✓`;
+          // 成功提示 2 秒后自动消失
+          setTimeout(() => {
+            if (state.error === `${success.join('、')}刷新成功 ✓`) {
+              state.error = '';
+              render();
+            }
+          }, 2000);
+        }
+      } else {
+        // 自动刷新时只显示错误
+        if (errs.length) {
+          state.error = `部分数据更新失败：${errs.join('；')}`;
+        } else if (isCreditPaused) {
+          state.error = `LDC 自动请求已暂停至 ${formatClockTime(latestThrottle.credit.pausedUntil)}，可点击刷新重试`;
+        }
       }
+
       gSet(KEYS.LAST_DATA, { trust: state.trust, credit: state.credit, ts: Date.now() });
     } catch (err) {
       state.error = manual
